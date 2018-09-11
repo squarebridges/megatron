@@ -34,4 +34,8 @@ def from_dataframe(df, graph):
       ...}
     ```
     '''
-    return {col: Input(graph=graph, name=col, input_shape=(1,)) for col in df.columns}
+    if graph.eager:
+        out = {col: Input(graph=graph, name=col)(df[col].values) for col in df.columns}
+    else:
+        out = {col: Input(graph=graph, name=col) for col in df.columns}
+    return out

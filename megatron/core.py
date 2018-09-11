@@ -1,7 +1,9 @@
 import os
 import numpy as np
+import pandas as pd
 import inspect
 from collections import defaultdict
+import dill as pickle
 from . import utils
 
 
@@ -81,7 +83,7 @@ class Input:
     output : np.ndarray
         is None until node is run; when run, the Numpy array passed in is stored here.
     """
-    def __init__(self, graph, name, input_shape=(1,)):
+    def __init__(self, graph, name, input_shape=()):
         self.graph = graph
         self.graph._add_node(self, name)
         self.name = name
@@ -312,7 +314,8 @@ class Graph:
         if not os.path.exists(self.cache_dir):
             os.mkdir(self.cache_dir)
         self.eager = False
-        self.nodes = defaultdict(list)
+        self.nodes = []
+        self.nodes_by_name = defaultdict(list)
 
     def _add_node(self, node, name):
         """Add a node to the graph.
@@ -324,7 +327,8 @@ class Graph:
         name : str
             the name of the node to be added.
         """
-        self.nodes[name].append(node)
+        self.nodes.append(node)
+        self.nodes_by_name[name].append(node)
 
     def _lookup_node(self, node):
         """Get node by name as string, or just give back the node itself.
@@ -348,8 +352,8 @@ class Graph:
             else:
                 name = node
                 index = '0'
-            if name in self.nodes:
-                return self.nodes[name][int(index)]
+            if name in self.nodes_by_name:
+                return self.nodes_by_name[name][int(index)]
             else:
                 raise ValueError("node not found in graph")
         else:
@@ -413,13 +417,13 @@ class Graph:
             if os.path.exists(filepath):
                 path[node_index].output = np.load(filepath)['arr']
                 print("Loading node number {} in path from cache".format(node_index))
+                # because this node has data, start from the next one
+                node_index += 1
                 break
         # walk forwards again, running nodes to get output until reaching terminal
-        while True:
+        while node_index < len(path):
             if isinstance(path[node_index], Node):
                 path[node_index].run()
-            if node_index == len(path) - 1:
-                break
             node_index += 1
         # optionally cache full path as compressed file for future use
         out = path[-1].output
@@ -445,9 +449,11 @@ class Graph:
             node.output = None
             node.graph = None
         with open(filepath, 'wb') as f:
-            pickle.dump(self.nodes, f)
+            # keep same cache_dir too for new graph when loaded
+            graph_info = {'nodes': self.nodes, 'cache_dir': self.cache_dir}
+            pickle.dump(graph_info, f)
         # reinsert data into Graph
-        for node in nodes:
+        for node in self.nodes:
             node.output = data[node]
 
     def run(self, output_nodes, feed_dict, cache_result=True, refit=False):
@@ -464,6 +470,9 @@ class Graph:
         refit : bool
             applies to Transformation nodes; if True, recalculate metadata based on this data.
         """
+        if isinstance(feed_dict, pd.DataFrame):
+            feed_dict = dict(zip(feed_dict.columns, feed_dict.T.values))
+
         if self.eager:
             raise utils.EagerRunException()
         out = []
@@ -477,7 +486,7 @@ class Graph:
         return out[0] if len(out) == 1 else out
 
 
-def load_graph(filepath):
+def load(filepath):
     """Load a set of nodes from a given file, stored previously with Graph.save().
 
     Parameters
@@ -486,5 +495,8 @@ def load_graph(filepath):
         the file from which to load a Graph.
     """
     with open(filepath, 'rb') as f:
-        nodes = pickle.load(f)
-    self.nodes = nodes
+        graph_info = pickle.load(f)
+    G = Graph(cache_dir=graph_info['cache_dir'])
+    for node in graph_info['nodes']:
+        G._add_node(node, node.name)
+    return G
